@@ -162,12 +162,9 @@ make soak             # Run soak test for memory leaks and connection stability
 
 ## Documentation
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Plugin lifecycle, C ABI, RPC dispatch, and error mapping.
-- [`docs/CONFIG.md`](docs/CONFIG.md) — Complete configuration options, auth file shapes, and examples.
-- [`docs/TESTING.md`](docs/TESTING.md) — Test matrix, fuzz testing, and benchmark metrics.
-- [`docs/DECISIONS.md`](docs/DECISIONS.md) — Architecture decision records (ADRs).
-- [`docs/STAGE3-VERDICT.md`](docs/STAGE3-VERDICT.md) — Stage 3 web-session spike verdict and findings.
-- [`docs/UPSTREAM.md`](docs/UPSTREAM.md) — Upstream CLIProxyAPI revision pinning and ABI contract.
+- [`docs/CONFIG.md`](docs/CONFIG.md) — Configuration guide, auth file formats, and examples.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — Plugin architecture, C ABI lifecycle, and error mapping.
+- [`docs/TESTING.md`](docs/TESTING.md) — Test suite, benchmarks, and performance metrics.
 
 ---
 
