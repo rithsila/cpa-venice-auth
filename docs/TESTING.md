@@ -248,13 +248,14 @@ done | sort -n | awk '{a[NR]=$1} END{print "p50="a[int(NR*0.5)]" p95="a[int(NR*0
 
 Compare against a direct call to Venice. Difference is plugin overhead. Target: under 5 ms at p95.
 
-### Measured Hardening Metrics (Wave 6)
+### Measured Hardening Metrics (Wave 6 & 8)
 
 | Metric | PRD Target | Measured Result | Status |
 |---|---|---|---|
 | **Metric 2: Proxy overhead** | p95 < 5 ms for non-streaming chat | 66.4 µs / op (~0.066 ms) via benchmark | PASS |
 | **Metric 3: Zero 401 nonce reuse** | 0 nonce reuse errors in soak | Fresh EIP-4361 payload signed per request, tested in `TestExecuteWalletModeReSignsOnRetry` | PASS |
 | **Metric 4: 402 cooling handling** | Single cooling event, no retry storm | 402 mapped immediately to `insufficient_balance` fault with no retry loops | PASS |
+| **Metric 5: Stage 3 spike go/no-go** | Written within 1 day of starting spike | `docs/STAGE3-VERDICT.md` completed with NO-GO verdict and trace evidence | PASS |
 
 ---
 

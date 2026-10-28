@@ -156,7 +156,7 @@ Edit the `models` list to add your own. Context lengths come from the [Venice mo
 - Image, audio, video, and embedding routes. Chat and responses only in v1.
 - Automatic money movement. Top-ups are manual.
 - Cloudflare bypass of any kind.
-- Free Venice usage. There is no such tier.
+- Free Venice usage. There is no free tier; see [`docs/STAGE3-VERDICT.md`](docs/STAGE3-VERDICT.md) for the spike verdict (NO-GO).
 
 ---
 
@@ -171,6 +171,7 @@ Edit the `models` list to add your own. Context lengths come from the [Venice mo
 | [`docs/TESTING.md`](docs/TESTING.md) | Test layers, fixtures, acceptance checklist, soak |
 | [`docs/UPSTREAM.md`](docs/UPSTREAM.md) | Pinned CLIProxyAPI revision, verified host behaviour, refresh procedure |
 | [`docs/STAGE3-SPIKE.md`](docs/STAGE3-SPIKE.md) | Web-session capture protocol and kill criteria |
+| [`docs/STAGE3-VERDICT.md`](docs/STAGE3-VERDICT.md) | Stage 3 web session spike verdict (NO-GO) |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | Why Go, why a plugin, why x402 leads |
 
 ---
