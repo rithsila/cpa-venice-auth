@@ -67,7 +67,11 @@ func New(h *host.API) *Venice {
 		cfg:    cfg,
 		host:   h,
 		auth:   auth.NewService(nil, auth.Config{BaseURL: cfg.BaseURL}),
-		exec:   executor.NewService(nil, hostCall, executor.Config{BaseURL: cfg.BaseURL}),
+		exec: executor.NewService(nil, hostCall, executor.Config{
+			BaseURL:       cfg.BaseURL,
+			WalletEnabled: cfg.WalletEnabled,
+			WalletKeyEnv:  cfg.WalletKeyEnv,
+		}),
 		models: models.NewService(nil, cfg.BaseURL, cfg.ModelsCacheSeconds),
 		quota:  quota.NewService(nil, cfg.BaseURL),
 	}
@@ -195,9 +199,28 @@ func (v *Venice) handleExecutorHTTPRequest(ctx context.Context, payload []byte) 
 }
 
 func (v *Venice) handleReconfigure(ctx context.Context, payload []byte) (any, error) {
+	v.mu.Lock()
+	if len(payload) > 0 {
+		var cfgMap map[string]any
+		if err := json.Unmarshal(payload, &cfgMap); err == nil {
+			if b, ok := cfgMap["wallet_enabled"].(bool); ok {
+				v.cfg.WalletEnabled = b
+			}
+			if s, ok := cfgMap["wallet_key_env"].(string); ok && s != "" {
+				v.cfg.WalletKeyEnv = s
+			}
+			if s, ok := cfgMap["base_url"].(string); ok && s != "" {
+				v.cfg.BaseURL = s
+			}
+			if sec, ok := cfgMap["models_cache_seconds"].(float64); ok && sec > 0 {
+				v.cfg.ModelsCacheSeconds = int(sec)
+			}
+		}
+	}
 	if v.models != nil {
 		v.models.Invalidate()
 	}
+	v.mu.Unlock()
 	return v.handleRegister(ctx, payload)
 }
 

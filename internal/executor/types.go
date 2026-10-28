@@ -88,12 +88,18 @@ type HTTPResponse struct {
 
 // Config specifies executor options.
 type Config struct {
-	BaseURL string
+	BaseURL       string
+	WalletEnabled bool
+	WalletKeyEnv  string
+	MaxRetries    int
 }
 
 // DefaultConfig provides defaults for the executor.
 func DefaultConfig() Config {
 	return Config{
-		BaseURL: "https://api.venice.ai/api/v1",
+		BaseURL:       "https://api.venice.ai/api/v1",
+		WalletEnabled: false,
+		WalletKeyEnv:  "VENICE_X402_PRIVATE_KEY",
+		MaxRetries:    2,
 	}
 }

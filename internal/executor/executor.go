@@ -8,19 +8,26 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"cpa-venice-auth/internal/auth"
 	"cpa-venice-auth/internal/dispatch"
 	"cpa-venice-auth/internal/host"
+	"cpa-venice-auth/internal/x402"
 )
 
 // Service executes Venice AI chat completions and generic requests.
 type Service struct {
-	client   *http.Client
-	hostCall host.CallFunc
-	cfg      Config
+	client       *http.Client
+	hostCall     host.CallFunc
+	cfg          Config
+	balanceGuard *x402.BalanceGuard
+	signersMu    sync.RWMutex
+	signers      map[string]*x402.Signer
 }
 
 // NewService creates an executor service.
@@ -31,48 +38,177 @@ func NewService(client *http.Client, hostCall host.CallFunc, cfg Config) *Servic
 	if cfg.BaseURL == "" {
 		cfg.BaseURL = "https://api.venice.ai/api/v1"
 	}
-	return &Service{
-		client:   client,
-		hostCall: hostCall,
-		cfg:      cfg,
+	if cfg.WalletKeyEnv == "" {
+		cfg.WalletKeyEnv = "VENICE_X402_PRIVATE_KEY"
 	}
+	if cfg.MaxRetries <= 0 {
+		cfg.MaxRetries = 2
+	}
+	return &Service{
+		client:       client,
+		hostCall:     hostCall,
+		cfg:          cfg,
+		balanceGuard: x402.NewBalanceGuard(),
+		signers:      make(map[string]*x402.Signer),
+	}
+}
+
+// Balance returns the current cached balance and consumption status.
+func (s *Service) Balance() (balanceUSD float64, canConsume bool, checked bool) {
+	if s.balanceGuard != nil {
+		return s.balanceGuard.Balance()
+	}
+	return 0, false, false
+}
+
+func (s *Service) isWalletMode(storage auth.Storage) bool {
+	if storage.Mode == "wallet" {
+		return true
+	}
+	if storage.APIKey == "" && (storage.WalletKey != "" || (s.cfg.WalletEnabled && os.Getenv(s.cfg.WalletKeyEnv) != "")) {
+		return true
+	}
+	return false
+}
+
+func (s *Service) getWalletKey(storage auth.Storage) string {
+	if storage.WalletKey != "" {
+		return storage.WalletKey
+	}
+	if s.cfg.WalletKeyEnv != "" {
+		return os.Getenv(s.cfg.WalletKeyEnv)
+	}
+	return ""
+}
+
+func (s *Service) getSigner(walletKeyHex string) (*x402.Signer, error) {
+	walletKeyHex = strings.TrimSpace(walletKeyHex)
+	if walletKeyHex == "" {
+		return nil, fmt.Errorf("x402 wallet key missing: neither storage.wallet_key nor %s env var is set", s.cfg.WalletKeyEnv)
+	}
+
+	s.signersMu.RLock()
+	signer, ok := s.signers[walletKeyHex]
+	s.signersMu.RUnlock()
+	if ok {
+		return signer, nil
+	}
+
+	s.signersMu.Lock()
+	defer s.signersMu.Unlock()
+	if signer, ok := s.signers[walletKeyHex]; ok {
+		return signer, nil
+	}
+
+	signer, err := x402.NewSigner(walletKeyHex)
+	if err != nil {
+		return nil, fmt.Errorf("init x402 signer: %w", err)
+	}
+	s.signers[walletKeyHex] = signer
+	return signer, nil
 }
 
 // Execute performs non-streaming model completion.
 func (s *Service) Execute(ctx context.Context, req Request) (Response, error) {
-	httpReq, err := s.buildHTTPRequest(ctx, req, false)
-	if err != nil {
-		return Response{}, err
+	storage := s.extractStorage(req.StorageJSON)
+	var signer *x402.Signer
+	if s.isWalletMode(storage) {
+		walletKey := s.getWalletKey(storage)
+		sig, err := s.getSigner(walletKey)
+		if err != nil {
+			return Response{}, dispatch.ErrorWithStatus("auth_invalid", http.StatusUnauthorized, 0, "%v", err)
+		}
+		signer = sig
+
+		baseURL := s.cfg.BaseURL
+		if storage.BaseURL != "" {
+			baseURL = storage.BaseURL
+		}
+		if err := s.balanceGuard.EnsureBalance(ctx, s.client, baseURL, signer); err != nil {
+			return Response{}, dispatch.ErrorWithStatus("insufficient_balance", http.StatusPaymentRequired, 0, "%v", err)
+		}
 	}
 
-	resp, err := s.client.Do(httpReq)
-	if err != nil {
-		return Response{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "execute request: %v", err)
-	}
-	defer resp.Body.Close()
+	var lastErr error
+	maxAttempts := 1 + s.cfg.MaxRetries
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return Response{}, ctx.Err()
+			case <-time.After(time.Duration(attempt) * 100 * time.Millisecond):
+			}
+		}
 
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return Response{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "read response body: %v", err)
+		httpReq, err := s.buildHTTPRequest(ctx, req, false)
+		if err != nil {
+			return Response{}, err
+		}
+
+		resp, err := s.client.Do(httpReq)
+		if err != nil {
+			lastErr = dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "execute request: %v", err)
+			continue
+		}
+
+		if date := resp.Header.Get("Date"); date != "" && signer != nil {
+			_ = signer.UpdateClockSkew(date)
+		}
+		if s.balanceGuard != nil {
+			s.balanceGuard.UpdateFromHeader(resp.Header)
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "read response body: %v", err)
+			continue
+		}
+
+		if resp.StatusCode >= 500 && resp.StatusCode <= 504 && attempt < maxAttempts-1 {
+			lastErr = s.mapError(resp.StatusCode, resp.Header, body)
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return Response{}, s.mapError(resp.StatusCode, resp.Header, body)
+		}
+
+		headers := make(http.Header)
+		for k, v := range resp.Header {
+			headers[k] = append([]string(nil), v...)
+		}
+
+		return Response{
+			Payload: body,
+			Headers: headers,
+		}, nil
 	}
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, s.mapError(resp.StatusCode, resp.Header, body)
-	}
-
-	headers := make(http.Header)
-	for k, v := range resp.Header {
-		headers[k] = append([]string(nil), v...)
-	}
-
-	return Response{
-		Payload: body,
-		Headers: headers,
-	}, nil
+	return Response{}, lastErr
 }
 
 // ExecuteStream performs streaming model completion.
 func (s *Service) ExecuteStream(ctx context.Context, req Request) (StreamResponse, error) {
+	storage := s.extractStorage(req.StorageJSON)
+	var signer *x402.Signer
+	if s.isWalletMode(storage) {
+		walletKey := s.getWalletKey(storage)
+		sig, err := s.getSigner(walletKey)
+		if err != nil {
+			return StreamResponse{}, dispatch.ErrorWithStatus("auth_invalid", http.StatusUnauthorized, 0, "%v", err)
+		}
+		signer = sig
+
+		baseURL := s.cfg.BaseURL
+		if storage.BaseURL != "" {
+			baseURL = storage.BaseURL
+		}
+		if err := s.balanceGuard.EnsureBalance(ctx, s.client, baseURL, signer); err != nil {
+			return StreamResponse{}, dispatch.ErrorWithStatus("insufficient_balance", http.StatusPaymentRequired, 0, "%v", err)
+		}
+	}
+
 	httpReq, err := s.buildHTTPRequest(ctx, req, true)
 	if err != nil {
 		return StreamResponse{}, err
@@ -81,6 +217,13 @@ func (s *Service) ExecuteStream(ctx context.Context, req Request) (StreamRespons
 	resp, err := s.client.Do(httpReq)
 	if err != nil {
 		return StreamResponse{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "execute stream request: %v", err)
+	}
+
+	if date := resp.Header.Get("Date"); date != "" && signer != nil {
+		_ = signer.UpdateClockSkew(date)
+	}
+	if s.balanceGuard != nil {
+		s.balanceGuard.UpdateFromHeader(resp.Header)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -147,9 +290,21 @@ func (s *Service) HTTPRequest(ctx context.Context, req HTTPRequest) (HTTPRespons
 		}
 	}
 
-	apiKey := s.extractAPIKey(req.StorageJSON)
-	if apiKey != "" && httpReq.Header.Get("Authorization") == "" {
-		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	storage := s.extractStorage(req.StorageJSON)
+	var signer *x402.Signer
+	if s.isWalletMode(storage) {
+		walletKey := s.getWalletKey(storage)
+		if sig, err := s.getSigner(walletKey); err == nil {
+			signer = sig
+			if siwx, err := signer.GenerateHeader(); err == nil {
+				httpReq.Header.Set("SIGN-IN-WITH-X", siwx)
+			}
+		}
+	} else {
+		apiKey := s.extractAPIKey(req.StorageJSON)
+		if apiKey != "" && httpReq.Header.Get("Authorization") == "" {
+			httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 
 	resp, err := s.client.Do(httpReq)
@@ -157,6 +312,13 @@ func (s *Service) HTTPRequest(ctx context.Context, req HTTPRequest) (HTTPRespons
 		return HTTPResponse{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "do request: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if date := resp.Header.Get("Date"); date != "" && signer != nil {
+		_ = signer.UpdateClockSkew(date)
+	}
+	if s.balanceGuard != nil {
+		s.balanceGuard.UpdateFromHeader(resp.Header)
+	}
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -209,7 +371,18 @@ func (s *Service) buildHTTPRequest(ctx context.Context, req Request, stream bool
 		httpReq.Header.Set("Accept", "application/json")
 	}
 
-	if storage.APIKey != "" {
+	if s.isWalletMode(storage) {
+		walletKey := s.getWalletKey(storage)
+		signer, err := s.getSigner(walletKey)
+		if err != nil {
+			return nil, err
+		}
+		siwxHeader, err := signer.GenerateHeader()
+		if err != nil {
+			return nil, fmt.Errorf("generate x402 header: %w", err)
+		}
+		httpReq.Header.Set("SIGN-IN-WITH-X", siwxHeader)
+	} else if storage.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+storage.APIKey)
 	}
 

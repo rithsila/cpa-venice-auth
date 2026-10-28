@@ -278,3 +278,203 @@ func TestCountTokensUnsupported(t *testing.T) {
 		t.Fatalf("fault code = %v, want unsupported", err)
 	}
 }
+
+func TestExecuteWalletModeSignsWithXAndNoAuthorizationHeader(t *testing.T) {
+	const testPrivKeyHex = "4c0883a69102937d6231471b5dbb6204db7e716b5c6e0f4504b0484389fa4009"
+	const expectedAddress = "0xF01a4711A00D21f860fd58A4357F21Ee102f6214"
+
+	var sawBalanceCheck bool
+	var sawChatCall bool
+	var chatSignHeader string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
+
+		if strings.HasPrefix(r.URL.Path, "/x402/balance/") {
+			sawBalanceCheck = true
+			if !strings.HasSuffix(r.URL.Path, expectedAddress) {
+				t.Errorf("balance path = %s, expected suffix %s", r.URL.Path, expectedAddress)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"canConsume":true,"balanceUsd":5.50}`))
+			return
+		}
+
+		if r.URL.Path == "/chat/completions" {
+			sawChatCall = true
+			if r.Header.Get("Authorization") != "" {
+				t.Errorf("expected no Authorization header in wallet mode, got %q", r.Header.Get("Authorization"))
+			}
+			chatSignHeader = r.Header.Get("SIGN-IN-WITH-X")
+			if chatSignHeader == "" {
+				t.Errorf("missing SIGN-IN-WITH-X header on chat completions request")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Balance-Remaining", "5.45")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"chat-1","choices":[{"message":{"content":"ok"}}]}`))
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), nil, Config{
+		BaseURL:       server.URL,
+		WalletEnabled: true,
+	})
+
+	storageBytes, _ := json.Marshal(map[string]any{
+		"type":       "venice",
+		"mode":       "wallet",
+		"wallet_key": testPrivKeyHex,
+	})
+
+	resp, err := svc.Execute(context.Background(), Request{
+		Model:       "llama-3.3-70b",
+		Payload:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		StorageJSON: storageBytes,
+	})
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+
+	if !sawBalanceCheck {
+		t.Fatal("pre-flight balance check was not executed")
+	}
+	if !sawChatCall {
+		t.Fatal("chat completions call was not executed")
+	}
+	if chatSignHeader == "" {
+		t.Fatal("chat completions call did not receive SIGN-IN-WITH-X header")
+	}
+
+	bal, _, checked := svc.Balance()
+	if !checked || bal != 5.45 {
+		t.Errorf("balance was not updated from X-Balance-Remaining: bal=%v, checked=%v", bal, checked)
+	}
+	if !strings.Contains(string(resp.Payload), "chat-1") {
+		t.Errorf("unexpected payload: %s", string(resp.Payload))
+	}
+}
+
+func TestExecuteWalletModeRefusesWhenInsufficientBalance(t *testing.T) {
+	const testPrivKeyHex = "4c0883a69102937d6231471b5dbb6204db7e716b5c6e0f4504b0484389fa4009"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/x402/balance/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"canConsume":false,"balanceUsd":0.00}`))
+			return
+		}
+		if r.URL.Path == "/chat/completions" {
+			t.Fatal("chat completions should NOT be called when balance guard fails")
+		}
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), nil, Config{
+		BaseURL:       server.URL,
+		WalletEnabled: true,
+	})
+
+	storageBytes, _ := json.Marshal(map[string]any{
+		"type":       "venice",
+		"mode":       "wallet",
+		"wallet_key": testPrivKeyHex,
+	})
+
+	_, err := svc.Execute(context.Background(), Request{
+		Model:       "llama-3.3-70b",
+		Payload:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		StorageJSON: storageBytes,
+	})
+	if err == nil {
+		t.Fatal("expected Execute to fail due to insufficient balance")
+	}
+
+	fault, ok := err.(interface{ FaultCode() string })
+	if !ok || fault.FaultCode() != "insufficient_balance" {
+		t.Fatalf("expected insufficient_balance fault, got: %v", err)
+	}
+}
+
+func TestExecuteWalletModeReSignsOnRetry(t *testing.T) {
+	const testPrivKeyHex = "4c0883a69102937d6231471b5dbb6204db7e716b5c6e0f4504b0484389fa4009"
+
+	var headersSeen []string
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Date", time.Now().UTC().Format(http.TimeFormat))
+
+		if strings.HasPrefix(r.URL.Path, "/x402/balance/") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"canConsume":true,"balanceUsd":10.00}`))
+			return
+		}
+
+		if r.URL.Path == "/chat/completions" {
+			mu.Lock()
+			headersSeen = append(headersSeen, r.Header.Get("SIGN-IN-WITH-X"))
+			callNum := len(headersSeen)
+			mu.Unlock()
+
+			if callNum == 1 {
+				// First attempt fails with 503 Service Unavailable (triggering retry)
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}`))
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":"chat-retry-ok"}`))
+			return
+		}
+
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), nil, Config{
+		BaseURL:       server.URL,
+		WalletEnabled: true,
+	})
+
+	storageBytes, _ := json.Marshal(map[string]any{
+		"type":       "venice",
+		"mode":       "wallet",
+		"wallet_key": testPrivKeyHex,
+	})
+
+	resp, err := svc.Execute(context.Background(), Request{
+		Model:       "llama-3.3-70b",
+		Payload:     []byte(`{"messages":[{"role":"user","content":"hi"}]}`),
+		StorageJSON: storageBytes,
+	})
+	if err != nil {
+		t.Fatalf("Execute with retry failed: %v", err)
+	}
+
+	mu.Lock()
+	count := len(headersSeen)
+	h := append([]string(nil), headersSeen...)
+	mu.Unlock()
+
+	if count < 2 {
+		t.Fatalf("expected at least 2 chat calls with retry, got %d", count)
+	}
+
+	if h[0] == h[1] {
+		t.Fatal("SIGN-IN-WITH-X header was reused across retry attempts! Must be re-signed on every retry.")
+	}
+
+	if !strings.Contains(string(resp.Payload), "chat-retry-ok") {
+		t.Fatalf("expected successful retry response, got: %s", string(resp.Payload))
+	}
+}
