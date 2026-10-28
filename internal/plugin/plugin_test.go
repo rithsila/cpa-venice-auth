@@ -90,13 +90,114 @@ func TestAuthIdentifier(t *testing.T) {
 }
 
 func TestAuthParseDeclinesForeignFiles(t *testing.T) {
-	env := call(t, newDispatcher(), "auth.parse")
+	d := newDispatcher()
+	reqBytes, _ := json.Marshal(map[string]any{
+		"Provider": "openai",
+		"RawJSON":  []byte(`{"type":"openai","key":"sk-123"}`),
+	})
+	raw, ok := d.Call("auth.parse", reqBytes)
+	if !ok {
+		t.Fatalf("auth.parse call failed: %s", raw)
+	}
+	env, err := envelope.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
 	var res authParseResponse
 	if err := json.Unmarshal(env.Result, &res); err != nil {
 		t.Fatalf("parse: %v", err)
 	}
 	if res.Handled {
-		t.Fatal("handled = true, want false until the auth wave")
+		t.Fatal("handled = true, want false for non-venice file")
+	}
+}
+
+func TestAuthParseAcceptsVeniceKey(t *testing.T) {
+	d := newDispatcher()
+	reqBytes, _ := json.Marshal(map[string]any{
+		"FileName": "venice-main.json",
+		"RawJSON":  []byte(`{"type":"venice","api_key":"vnc_test_secret"}`),
+	})
+	raw, ok := d.Call("auth.parse", reqBytes)
+	if !ok {
+		t.Fatalf("auth.parse failed: %s", raw)
+	}
+	env, err := envelope.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var res struct {
+		Handled bool
+		Auth    struct {
+			Provider string
+			ID       string
+			FileName string
+			Label    string
+		}
+	}
+	if err := json.Unmarshal(env.Result, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !res.Handled {
+		t.Fatal("handled = false, want true")
+	}
+	if res.Auth.Provider != "venice" {
+		t.Fatalf("provider = %q, want venice", res.Auth.Provider)
+	}
+	if res.Auth.ID != "venice-main" {
+		t.Fatalf("id = %q, want venice-main", res.Auth.ID)
+	}
+}
+
+func TestAuthLoginStartAndPoll(t *testing.T) {
+	d := newDispatcher()
+	rawStart, ok := d.Call("auth.login.start", []byte(`{"Provider":"venice"}`))
+	if !ok {
+		t.Fatalf("auth.login.start failed: %s", rawStart)
+	}
+	envStart, _ := envelope.Decode(rawStart)
+	var startRes struct {
+		Provider string
+		URL      string
+		State    string
+	}
+	_ = json.Unmarshal(envStart.Result, &startRes)
+	if startRes.Provider != "venice" || startRes.URL != "https://venice.ai/settings/api" {
+		t.Fatalf("unexpected start response: %+v", startRes)
+	}
+
+	rawPoll, ok := d.Call("auth.login.poll", []byte(`{"Provider":"venice","State":"`+startRes.State+`"}`))
+	if !ok {
+		t.Fatalf("auth.login.poll failed: %s", rawPoll)
+	}
+	envPoll, _ := envelope.Decode(rawPoll)
+	var pollRes struct {
+		Status  string
+		Message string
+	}
+	_ = json.Unmarshal(envPoll.Result, &pollRes)
+	if pollRes.Status != "pending" {
+		t.Fatalf("status = %q, want pending", pollRes.Status)
+	}
+}
+
+func TestAuthRefreshRejectsMissingCredentials(t *testing.T) {
+	d := newDispatcher()
+	reqBytes, _ := json.Marshal(map[string]any{
+		"AuthID":       "venice-empty",
+		"AuthProvider": "venice",
+		"StorageJSON":  []byte(`{}`),
+	})
+	raw, ok := d.Call("auth.refresh", reqBytes)
+	if ok {
+		t.Fatal("ok = true, want false for empty credentials")
+	}
+	env, err := envelope.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error == nil || env.Error.Code != "auth_invalid" {
+		t.Fatalf("error = %+v, want auth_invalid", env.Error)
 	}
 }
 

@@ -3,8 +3,10 @@ package plugin
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
+	"cpa-venice-auth/internal/auth"
 	"cpa-venice-auth/internal/dispatch"
 	"cpa-venice-auth/internal/host"
 )
@@ -44,12 +46,18 @@ type Venice struct {
 	mu     sync.RWMutex
 	cfg    Config
 	host   *host.API
+	auth   *auth.Service
 	closed bool
 }
 
 // New builds a provider around a host API.
 func New(h *host.API) *Venice {
-	return &Venice{cfg: DefaultConfig(), host: h}
+	cfg := DefaultConfig()
+	return &Venice{
+		cfg:  cfg,
+		host: h,
+		auth: auth.NewService(nil, auth.Config{BaseURL: cfg.BaseURL}),
+	}
 }
 
 // Register installs every method this build supports. Methods for waves that
@@ -60,6 +68,9 @@ func (v *Venice) Register(d *dispatch.Dispatcher) {
 	d.Register("plugin.reconfigure", v.handleRegister)
 	d.Register("auth.identifier", v.handleAuthIdentifier)
 	d.Register("auth.parse", v.handleAuthParse)
+	d.Register("auth.refresh", v.handleAuthRefresh)
+	d.Register("auth.login.start", v.handleAuthLoginStart)
+	d.Register("auth.login.poll", v.handleAuthLoginPoll)
 }
 
 // Config returns a copy of the active configuration.
@@ -85,8 +96,36 @@ func (v *Venice) handleAuthIdentifier(context.Context, []byte) (any, error) {
 	return identifierResponse{Identifier: ProviderName}, nil
 }
 
-// handleAuthParse reports "not handled" until the auth wave lands. Returning
-// Handled:false is the ABI's way of saying another provider owns this file.
-func (v *Venice) handleAuthParse(context.Context, []byte) (any, error) {
-	return authParseResponse{Handled: false}, nil
+func (v *Venice) handleAuthParse(ctx context.Context, payload []byte) (any, error) {
+	var req auth.ParseRequest
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &req)
+	}
+	return v.auth.Parse(ctx, req)
+}
+
+func (v *Venice) handleAuthRefresh(ctx context.Context, payload []byte) (any, error) {
+	var req auth.RefreshRequest
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, dispatch.Errorf("invalid_request", "unmarshal refresh request: %v", err)
+		}
+	}
+	return v.auth.Refresh(ctx, req)
+}
+
+func (v *Venice) handleAuthLoginStart(ctx context.Context, payload []byte) (any, error) {
+	var req auth.LoginStartRequest
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &req)
+	}
+	return v.auth.StartLogin(ctx, req)
+}
+
+func (v *Venice) handleAuthLoginPoll(ctx context.Context, payload []byte) (any, error) {
+	var req auth.LoginPollRequest
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &req)
+	}
+	return v.auth.PollLogin(ctx, req)
 }
