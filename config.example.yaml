@@ -1,0 +1,26 @@
+# Copy to config.yaml. Stage 0 (upstream.openai-compatibility) and the plugin
+# can coexist, but you only need one while testing.
+config-version: 8
+
+server:
+  host: "127.0.0.1"
+  port: 8317
+
+# Keys your local clients present to CPA. Not Venice keys.
+access:
+  api-keys:
+    - "local-dev-key"
+
+plugins:
+  enabled: true
+  # CPA v8 discovers <dir>/<plugin-id>.dylib and <dir>/<os>/<arch>/<plugin-id>.dylib.
+  # The file stem must match the key under configs.
+  dir: "/Users/rithsila/Projects/cpa-venice-auth/bin/plugins"
+  configs:
+    venice-provider:
+      enabled: true
+      priority: 10
+      wallet_enabled: false
+      models_cache_seconds: 10800
+      wallet_key_env: "VENICE_X402_PRIVATE_KEY"
+      base_url: "https://api.venice.ai/api/v1"
