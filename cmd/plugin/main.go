@@ -161,9 +161,15 @@ func callHost(method string, payload []byte) ([]byte, error) {
 
 	var response C.cliproxy_buffer
 	if code := C.call_host_api(cMethod, req, C.size_t(len(payload)), &response); code != 0 {
+		if response.ptr != nil {
+			C.free_host_buffer(response.ptr, response.len)
+		}
 		return nil, errors.New("host callback failed: " + method)
 	}
 	if response.ptr == nil || response.len == 0 {
+		if response.ptr != nil {
+			C.free_host_buffer(response.ptr, response.len)
+		}
 		return nil, nil
 	}
 

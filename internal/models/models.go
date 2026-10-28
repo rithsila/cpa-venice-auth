@@ -63,6 +63,7 @@ type Service struct {
 	mu           sync.RWMutex
 	cachedModels []ModelInfo
 	cachedAt     time.Time
+	refreshMu    sync.Mutex
 }
 
 // NewService creates a model registrar service.
@@ -107,6 +108,23 @@ func (s *Service) RegisterModels(ctx context.Context, _ RegistrationRequest) (Re
 	cached := s.cachedModels
 	cachedAt := s.cachedAt
 	ttl := s.cacheTTL
+	s.mu.RUnlock()
+
+	if len(cached) > 0 && time.Since(cachedAt) < ttl {
+		return RegistrationResponse{
+			Provider: "venice",
+			Models:   append([]ModelInfo(nil), cached...),
+		}, nil
+	}
+
+	s.refreshMu.Lock()
+	defer s.refreshMu.Unlock()
+
+	// Double-check under refresh lock: another goroutine may have refreshed while we waited
+	s.mu.RLock()
+	cached = s.cachedModels
+	cachedAt = s.cachedAt
+	ttl = s.cacheTTL
 	s.mu.RUnlock()
 
 	if len(cached) > 0 && time.Since(cachedAt) < ttl {

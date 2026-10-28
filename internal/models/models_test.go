@@ -2,9 +2,11 @@ package models
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,5 +138,51 @@ func TestStaleCacheServedOnUpstreamFailure(t *testing.T) {
 	}
 	if len(resp.Models) != 1 || resp.Models[0].ID != "model-stable" {
 		t.Fatalf("unexpected stale models: %+v", resp.Models)
+	}
+}
+
+func TestConcurrentCacheExpiryTriggersOneRefresh(t *testing.T) {
+	var requestCount int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requestCount, 1)
+		time.Sleep(20 * time.Millisecond) // Simulate network latency
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"model-1","model_spec":{"name":"Model 1"}}]}`))
+	}))
+	defer server.Close()
+
+	svc := NewService(server.Client(), server.URL, 1)
+
+	// Invalidate to start cold
+	svc.Invalidate()
+
+	const concurrentReaders = 50
+	var wg sync.WaitGroup
+	errCh := make(chan error, concurrentReaders)
+
+	for i := 0; i < concurrentReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			res, err := svc.RegisterModels(context.Background(), RegistrationRequest{})
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if len(res.Models) != 1 {
+				errCh <- fmt.Errorf("unexpected models count: %d", len(res.Models))
+			}
+		}()
+	}
+
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		t.Fatalf("reader error: %v", err)
+	}
+
+	if count := atomic.LoadInt32(&requestCount); count != 1 {
+		t.Fatalf("expected exactly 1 upstream refresh under 50 concurrent readers, got %d", count)
 	}
 }

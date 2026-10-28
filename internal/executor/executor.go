@@ -401,6 +401,15 @@ func (s *Service) buildHTTPRequest(ctx context.Context, req Request, stream bool
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
+	for k, vals := range req.Headers {
+		if strings.EqualFold(k, "Authorization") || strings.EqualFold(k, "Host") || strings.EqualFold(k, "Content-Length") {
+			continue
+		}
+		for _, v := range vals {
+			httpReq.Header.Add(k, v)
+		}
+	}
+
 	httpReq.Header.Set("Content-Type", "application/json")
 	if stream {
 		httpReq.Header.Set("Accept", "text/event-stream")
@@ -428,6 +437,10 @@ func (s *Service) buildHTTPRequest(ctx context.Context, req Request, stream bool
 
 func (s *Service) forwardStreamToHost(ctx context.Context, streamID string, r io.ReadCloser) {
 	defer r.Close()
+	go func() {
+		<-ctx.Done()
+		_ = r.Close()
+	}()
 	reader := bufio.NewReader(r)
 
 	type rpcStreamEmitRequest struct {

@@ -305,3 +305,35 @@ func TestPluginShutdownCancelsStreams(t *testing.T) {
 		t.Fatal("v.closed = false, want true")
 	}
 }
+
+func TestQuotaFetchViaPlugin(t *testing.T) {
+	d := newDispatcher()
+	// Quota fetch with empty apiKey should return cleanly formatted error without panic
+	raw, ok := d.Call("quota.fetch", []byte(`{}`))
+	if ok {
+		t.Fatal("ok = true, want false for empty quota fetch")
+	}
+	env, err := envelope.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error == nil {
+		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestExecutorHTTPRequestViaPlugin(t *testing.T) {
+	d := newDispatcher()
+	// Missing URL should fail cleanly with invalid_request
+	raw, ok := d.Call("executor.http_request", []byte(`{}`))
+	if ok {
+		t.Fatal("ok = true, want false for missing URL")
+	}
+	env, err := envelope.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error == nil || env.Error.Code != "invalid_request" {
+		t.Fatalf("error = %+v, want invalid_request", env.Error)
+	}
+}
