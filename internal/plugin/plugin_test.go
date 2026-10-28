@@ -47,8 +47,17 @@ func TestRegistration(t *testing.T) {
 	if !reg.Capabilities.AuthProvider {
 		t.Fatal("auth_provider = false, want true")
 	}
-	if reg.Capabilities.Executor {
-		t.Fatal("executor = true, want false in wave 0")
+	if !reg.Capabilities.Executor {
+		t.Fatal("executor = false, want true in wave 3")
+	}
+	if reg.Capabilities.ExecutorModelScope != "both" {
+		t.Fatalf("executor_model_scope = %q, want both", reg.Capabilities.ExecutorModelScope)
+	}
+	if len(reg.Capabilities.ExecutorInputFormats) != 1 || reg.Capabilities.ExecutorInputFormats[0] != "chat-completions" {
+		t.Fatalf("executor_input_formats = %v, want [chat-completions]", reg.Capabilities.ExecutorInputFormats)
+	}
+	if len(reg.Capabilities.ExecutorOutputFormats) != 1 || reg.Capabilities.ExecutorOutputFormats[0] != "chat-completions" {
+		t.Fatalf("executor_output_formats = %v, want [chat-completions]", reg.Capabilities.ExecutorOutputFormats)
 	}
 	if len(reg.Metadata.ConfigFields) != 4 {
 		t.Fatalf("config fields = %d, want 4", len(reg.Metadata.ConfigFields))
@@ -201,9 +210,35 @@ func TestAuthRefreshRejectsMissingCredentials(t *testing.T) {
 	}
 }
 
+func TestExecutorIdentifier(t *testing.T) {
+	env := call(t, newDispatcher(), "executor.identifier")
+	var res identifierResponse
+	if err := json.Unmarshal(env.Result, &res); err != nil {
+		t.Fatalf("identifier: %v", err)
+	}
+	if res.Identifier != ProviderName {
+		t.Fatalf("identifier = %q, want %q", res.Identifier, ProviderName)
+	}
+}
+
+func TestExecutorCountTokensReturnsUnsupported(t *testing.T) {
+	d := newDispatcher()
+	raw, ok := d.Call("executor.count_tokens", []byte(`{}`))
+	if ok {
+		t.Fatal("ok = true, want false for count_tokens")
+	}
+	env, err := envelope.Decode(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Error == nil || env.Error.Code != "unsupported" {
+		t.Fatalf("error = %+v, want unsupported", env.Error)
+	}
+}
+
 func TestUnimplementedMethodIsCleanError(t *testing.T) {
 	d := newDispatcher()
-	raw, ok := d.Call("executor.execute", nil)
+	raw, ok := d.Call("models.list", nil)
 	if ok {
 		t.Fatal("ok = true, want false")
 	}

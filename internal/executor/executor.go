@@ -1,0 +1,331 @@
+package executor
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"cpa-venice-auth/internal/auth"
+	"cpa-venice-auth/internal/dispatch"
+	"cpa-venice-auth/internal/host"
+)
+
+// Service executes Venice AI chat completions and generic requests.
+type Service struct {
+	client   *http.Client
+	hostCall host.CallFunc
+	cfg      Config
+}
+
+// NewService creates an executor service.
+func NewService(client *http.Client, hostCall host.CallFunc, cfg Config) *Service {
+	if client == nil {
+		client = &http.Client{}
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = "https://api.venice.ai/api/v1"
+	}
+	return &Service{
+		client:   client,
+		hostCall: hostCall,
+		cfg:      cfg,
+	}
+}
+
+// Execute performs non-streaming model completion.
+func (s *Service) Execute(ctx context.Context, req Request) (Response, error) {
+	httpReq, err := s.buildHTTPRequest(ctx, req, false)
+	if err != nil {
+		return Response{}, err
+	}
+
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		return Response{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "execute request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return Response{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "read response body: %v", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return Response{}, s.mapError(resp.StatusCode, resp.Header, body)
+	}
+
+	headers := make(http.Header)
+	for k, v := range resp.Header {
+		headers[k] = append([]string(nil), v...)
+	}
+
+	return Response{
+		Payload: body,
+		Headers: headers,
+	}, nil
+}
+
+// ExecuteStream performs streaming model completion.
+func (s *Service) ExecuteStream(ctx context.Context, req Request) (StreamResponse, error) {
+	httpReq, err := s.buildHTTPRequest(ctx, req, true)
+	if err != nil {
+		return StreamResponse{}, err
+	}
+
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		return StreamResponse{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "execute stream request: %v", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return StreamResponse{}, s.mapError(resp.StatusCode, resp.Header, body)
+	}
+
+	streamHeaders := make(http.Header)
+	for k, v := range resp.Header {
+		streamHeaders[k] = append([]string(nil), v...)
+	}
+	if streamHeaders.Get("Content-Type") == "" {
+		streamHeaders.Set("Content-Type", "text/event-stream")
+	}
+
+	// If a StreamID was passed and hostCall is available, forward chunks asynchronously
+	if req.StreamID != "" && s.hostCall != nil {
+		go s.forwardStreamToHost(req.StreamID, resp.Body)
+		return StreamResponse{Headers: streamHeaders}, nil
+	}
+
+	// Fallback for tests or direct calls without host stream bridge
+	chunks, err := s.readAllChunks(resp.Body)
+	if err != nil {
+		return StreamResponse{}, err
+	}
+	return StreamResponse{
+		Headers: streamHeaders,
+		Chunks:  chunks,
+	}, nil
+}
+
+// CountTokens is unsupported on Venice (Venice does not have a public count_tokens endpoint).
+func (s *Service) CountTokens(ctx context.Context, req Request) (Response, error) {
+	return Response{}, dispatch.Errorf("unsupported", "count_tokens is unsupported on Venice provider")
+}
+
+// HTTPRequest handles generic HTTP proxying through the executor.
+func (s *Service) HTTPRequest(ctx context.Context, req HTTPRequest) (HTTPResponse, error) {
+	targetURL := req.URL
+	if targetURL == "" {
+		return HTTPResponse{}, dispatch.Errorf("invalid_request", "URL is required")
+	}
+
+	method := req.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+
+	var bodyReader io.Reader
+	if len(req.Body) > 0 {
+		bodyReader = bytes.NewReader(req.Body)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, method, targetURL, bodyReader)
+	if err != nil {
+		return HTTPResponse{}, fmt.Errorf("create http request: %w", err)
+	}
+
+	for k, vals := range req.Headers {
+		for _, v := range vals {
+			httpReq.Header.Add(k, v)
+		}
+	}
+
+	apiKey := s.extractAPIKey(req.StorageJSON)
+	if apiKey != "" && httpReq.Header.Get("Authorization") == "" {
+		httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	resp, err := s.client.Do(httpReq)
+	if err != nil {
+		return HTTPResponse{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "do request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return HTTPResponse{}, dispatch.ErrorWithStatus("upstream_error", http.StatusBadGateway, 0, "read response: %v", err)
+	}
+
+	return HTTPResponse{
+		StatusCode: resp.StatusCode,
+		Headers:    resp.Header,
+		Body:       respBody,
+	}, nil
+}
+
+func (s *Service) buildHTTPRequest(ctx context.Context, req Request, stream bool) (*http.Request, error) {
+	baseURL := s.cfg.BaseURL
+	storage := s.extractStorage(req.StorageJSON)
+	if storage.BaseURL != "" {
+		baseURL = storage.BaseURL
+	}
+	endpoint := strings.TrimRight(baseURL, "/") + "/chat/completions"
+
+	var bodyBytes []byte
+	if len(req.Payload) > 0 {
+		bodyBytes = req.Payload
+	} else if len(req.OriginalRequest) > 0 {
+		bodyBytes = req.OriginalRequest
+	}
+
+	if stream && len(bodyBytes) > 0 {
+		var payloadMap map[string]any
+		if err := json.Unmarshal(bodyBytes, &payloadMap); err == nil {
+			if isStream, ok := payloadMap["stream"].(bool); !ok || !isStream {
+				payloadMap["stream"] = true
+				if updated, err := json.Marshal(payloadMap); err == nil {
+					bodyBytes = updated
+				}
+			}
+		}
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	if stream {
+		httpReq.Header.Set("Accept", "text/event-stream")
+	} else {
+		httpReq.Header.Set("Accept", "application/json")
+	}
+
+	if storage.APIKey != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+storage.APIKey)
+	}
+
+	return httpReq, nil
+}
+
+func (s *Service) forwardStreamToHost(streamID string, r io.ReadCloser) {
+	defer r.Close()
+	reader := bufio.NewReader(r)
+
+	type rpcStreamEmitRequest struct {
+		StreamID string `json:"stream_id"`
+		Payload  []byte `json:"payload,omitempty"`
+		Error    string `json:"error,omitempty"`
+	}
+	type rpcStreamCloseRequest struct {
+		StreamID string `json:"stream_id"`
+		Error    string `json:"error,omitempty"`
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			chunk := append([]byte(nil), buf[:n]...)
+			payload, _ := json.Marshal(rpcStreamEmitRequest{
+				StreamID: streamID,
+				Payload:  chunk,
+			})
+			_, _ = s.hostCall("host.stream.emit", payload)
+		}
+		if err != nil {
+			closeReq := rpcStreamCloseRequest{StreamID: streamID}
+			if err != io.EOF {
+				closeReq.Error = err.Error()
+			}
+			payload, _ := json.Marshal(closeReq)
+			_, _ = s.hostCall("host.stream.close", payload)
+			return
+		}
+	}
+}
+
+func (s *Service) readAllChunks(r io.ReadCloser) ([]StreamChunk, error) {
+	defer r.Close()
+	reader := bufio.NewReader(r)
+	var chunks []StreamChunk
+	buf := make([]byte, 4096)
+	for {
+		n, err := reader.Read(buf)
+		if n > 0 {
+			chunks = append(chunks, StreamChunk{
+				Payload: append([]byte(nil), buf[:n]...),
+			})
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return chunks, err
+		}
+	}
+	return chunks, nil
+}
+
+func (s *Service) extractStorage(storageJSON []byte) auth.Storage {
+	var storage auth.Storage
+	if len(storageJSON) > 0 {
+		_ = json.Unmarshal(storageJSON, &storage)
+	}
+	return storage
+}
+
+func (s *Service) extractAPIKey(storageJSON []byte) string {
+	storage := s.extractStorage(storageJSON)
+	return storage.APIKey
+}
+
+func (s *Service) mapError(status int, headers http.Header, body []byte) *dispatch.Fault {
+	bodyStr := strings.TrimSpace(string(body))
+
+	retryAfter := 0
+	if ra := headers.Get("Retry-After"); ra != "" {
+		if sec, err := strconv.Atoi(ra); err == nil {
+			retryAfter = sec
+		}
+	} else if rl := headers.Get("x-ratelimit-reset-requests"); rl != "" {
+		if sec, err := strconv.Atoi(rl); err == nil {
+			retryAfter = sec
+		}
+	}
+
+	// 402 Insufficient Balance
+	if status == http.StatusPaymentRequired || strings.Contains(bodyStr, "INSUFFICIENT_BALANCE") {
+		return dispatch.ErrorWithStatus("insufficient_balance", http.StatusPaymentRequired, 0, "insufficient balance: Venice account has no remaining credits")
+	}
+
+	// 401 Pro Only Model
+	if strings.Contains(bodyStr, "PRO_ONLY_MODEL") {
+		return dispatch.ErrorWithStatus("model_unavailable", http.StatusUnauthorized, 0, "model requires Venice Pro subscription")
+	}
+
+	// 401 Invalid Key
+	if status == http.StatusUnauthorized {
+		return dispatch.ErrorWithStatus("auth_invalid", http.StatusUnauthorized, 0, "invalid Venice API key: %s", bodyStr)
+	}
+
+	// 429 Rate Limit
+	if status == http.StatusTooManyRequests {
+		return dispatch.ErrorWithStatus("rate_limited", http.StatusTooManyRequests, retryAfter, "rate limit reached: %s", bodyStr)
+	}
+
+	// Upstream server errors
+	if status >= 500 {
+		return dispatch.ErrorWithStatus("upstream_error", status, 0, "venice upstream server error (%d): %s", status, bodyStr)
+	}
+
+	return dispatch.ErrorWithStatus("plugin_error", status, 0, "venice request failed (%d): %s", status, bodyStr)
+}

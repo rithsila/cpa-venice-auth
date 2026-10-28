@@ -16,17 +16,33 @@ import (
 // Handler answers one plugin method.
 type Handler func(ctx context.Context, payload []byte) (any, error)
 
-// Fault is an error carrying an explicit envelope code.
+// Fault is an error carrying an explicit envelope code and optional HTTP details.
 type Fault struct {
-	Code    string
-	Message string
+	Code            string
+	Message         string
+	HTTPStatus      int
+	RetryAfterSec   int
 }
 
-func (f *Fault) Error() string { return f.Message }
+func (f *Fault) Error() string             { return f.Message }
+func (f *Fault) FaultCode() string         { return f.Code }
+func (f *Fault) StatusCode() int           { return f.HTTPStatus }
+func (f *Fault) RetryAfter() int           { return f.RetryAfterSec }
+func (f *Fault) RetryAfterSeconds() int    { return f.RetryAfterSec }
 
 // Errorf builds a Fault.
-func Errorf(code, format string, args ...any) error {
+func Errorf(code, format string, args ...any) *Fault {
 	return &Fault{Code: code, Message: fmt.Sprintf(format, args...)}
+}
+
+// ErrorWithStatus builds a Fault with an HTTP status and optional retry after seconds.
+func ErrorWithStatus(code string, httpStatus int, retryAfter int, format string, args ...any) *Fault {
+	return &Fault{
+		Code:          code,
+		Message:       fmt.Sprintf(format, args...),
+		HTTPStatus:    httpStatus,
+		RetryAfterSec: retryAfter,
+	}
 }
 
 // Dispatcher holds the method table.
@@ -69,11 +85,17 @@ func (d *Dispatcher) Call(method string, payload []byte) (out []byte, ok bool) {
 	result, err := h(context.Background(), payload)
 	if err != nil {
 		code := "plugin_error"
+		status := 0
+		retryAfter := 0
 		var fault *Fault
-		if errors.As(err, &fault) && fault.Code != "" {
-			code = fault.Code
+		if errors.As(err, &fault) && fault != nil {
+			if fault.Code != "" {
+				code = fault.Code
+			}
+			status = fault.HTTPStatus
+			retryAfter = fault.RetryAfterSec
 		}
-		return envelope.Fail(code, err.Error()), false
+		return envelope.FailWithDetail(code, err.Error(), status, retryAfter), false
 	}
 
 	raw, err := envelope.OK(result)

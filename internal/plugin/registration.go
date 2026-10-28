@@ -21,8 +21,11 @@ type metadata struct {
 }
 
 type capabilities struct {
-	AuthProvider bool `json:"auth_provider"`
-	Executor     bool `json:"executor"`
+	AuthProvider          bool     `json:"auth_provider"`
+	Executor              bool     `json:"executor"`
+	ExecutorModelScope    string   `json:"executor_model_scope,omitempty"`
+	ExecutorInputFormats  []string `json:"executor_input_formats,omitempty"`
+	ExecutorOutputFormats []string `json:"executor_output_formats,omitempty"`
 }
 
 type registration struct {
@@ -66,9 +69,13 @@ func buildRegistration() registration {
 				},
 			},
 		},
-		// Only auth_provider is advertised in wave 0. Advertising a capability
-		// that is not implemented would route live traffic into a stub.
-		Capabilities: capabilities{AuthProvider: true},
+		Capabilities: capabilities{
+			AuthProvider:          true,
+			Executor:              true,
+			ExecutorModelScope:    "both",
+			ExecutorInputFormats:  []string{"chat-completions"},
+			ExecutorOutputFormats: []string{"chat-completions"},
+		},
 	}
 }
 

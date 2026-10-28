@@ -8,6 +8,7 @@ import (
 
 	"cpa-venice-auth/internal/auth"
 	"cpa-venice-auth/internal/dispatch"
+	"cpa-venice-auth/internal/executor"
 	"cpa-venice-auth/internal/host"
 )
 
@@ -47,16 +48,22 @@ type Venice struct {
 	cfg    Config
 	host   *host.API
 	auth   *auth.Service
+	exec   *executor.Service
 	closed bool
 }
 
 // New builds a provider around a host API.
 func New(h *host.API) *Venice {
 	cfg := DefaultConfig()
+	var hostCall host.CallFunc
+	if h != nil {
+		hostCall = h.Call
+	}
 	return &Venice{
 		cfg:  cfg,
 		host: h,
 		auth: auth.NewService(nil, auth.Config{BaseURL: cfg.BaseURL}),
+		exec: executor.NewService(nil, hostCall, executor.Config{BaseURL: cfg.BaseURL}),
 	}
 }
 
@@ -71,6 +78,11 @@ func (v *Venice) Register(d *dispatch.Dispatcher) {
 	d.Register("auth.refresh", v.handleAuthRefresh)
 	d.Register("auth.login.start", v.handleAuthLoginStart)
 	d.Register("auth.login.poll", v.handleAuthLoginPoll)
+	d.Register("executor.identifier", v.handleExecutorIdentifier)
+	d.Register("executor.execute", v.handleExecutorExecute)
+	d.Register("executor.execute_stream", v.handleExecutorExecuteStream)
+	d.Register("executor.count_tokens", v.handleExecutorCountTokens)
+	d.Register("executor.http_request", v.handleExecutorHTTPRequest)
 }
 
 // Config returns a copy of the active configuration.
@@ -128,4 +140,46 @@ func (v *Venice) handleAuthLoginPoll(ctx context.Context, payload []byte) (any, 
 		_ = json.Unmarshal(payload, &req)
 	}
 	return v.auth.PollLogin(ctx, req)
+}
+
+func (v *Venice) handleExecutorIdentifier(context.Context, []byte) (any, error) {
+	return identifierResponse{Identifier: ProviderName}, nil
+}
+
+func (v *Venice) handleExecutorExecute(ctx context.Context, payload []byte) (any, error) {
+	var req executor.Request
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, dispatch.Errorf("invalid_request", "unmarshal executor request: %v", err)
+		}
+	}
+	return v.exec.Execute(ctx, req)
+}
+
+func (v *Venice) handleExecutorExecuteStream(ctx context.Context, payload []byte) (any, error) {
+	var req executor.Request
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, dispatch.Errorf("invalid_request", "unmarshal stream request: %v", err)
+		}
+	}
+	return v.exec.ExecuteStream(ctx, req)
+}
+
+func (v *Venice) handleExecutorCountTokens(ctx context.Context, payload []byte) (any, error) {
+	var req executor.Request
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &req)
+	}
+	return v.exec.CountTokens(ctx, req)
+}
+
+func (v *Venice) handleExecutorHTTPRequest(ctx context.Context, payload []byte) (any, error) {
+	var req executor.HTTPRequest
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, dispatch.Errorf("invalid_request", "unmarshal http request: %v", err)
+		}
+	}
+	return v.exec.HTTPRequest(ctx, req)
 }

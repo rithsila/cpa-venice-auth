@@ -9,8 +9,10 @@ import (
 
 // Error is the machine-readable failure carried by an envelope.
 type Error struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code              string `json:"code"`
+	Message           string `json:"message"`
+	HTTPStatus        int    `json:"http_status,omitempty"`
+	RetryAfterSeconds int    `json:"retry_after_seconds,omitempty"`
 }
 
 // Envelope is the wire format for every plugin response.
@@ -32,7 +34,20 @@ func OK(result any) ([]byte, error) {
 // Fail builds a failure envelope. It never returns an error: a failure
 // message must always be deliverable to the host.
 func Fail(code, message string) []byte {
-	raw, _ := json.Marshal(Envelope{OK: false, Error: &Error{Code: code, Message: message}})
+	return FailWithDetail(code, message, 0, 0)
+}
+
+// FailWithDetail builds a failure envelope with HTTP status and retry details.
+func FailWithDetail(code, message string, httpStatus, retryAfter int) []byte {
+	raw, _ := json.Marshal(Envelope{
+		OK: false,
+		Error: &Error{
+			Code:              code,
+			Message:           message,
+			HTTPStatus:        httpStatus,
+			RetryAfterSeconds: retryAfter,
+		},
+	})
 	return raw
 }
 
