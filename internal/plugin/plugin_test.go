@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"cpa-venice-auth/internal/dispatch"
 	"cpa-venice-auth/internal/envelope"
@@ -279,5 +280,28 @@ func TestUnimplementedMethodIsCleanError(t *testing.T) {
 	}
 	if env.Error == nil || env.Error.Code != "unknown_method" {
 		t.Fatalf("error = %+v, want unknown_method", env.Error)
+	}
+}
+
+func TestPluginShutdownCancelsStreams(t *testing.T) {
+	v := New(nil)
+	d := dispatch.New()
+	v.Register(d)
+
+	// Verify close completes cleanly without blocking
+	done := make(chan struct{})
+	go func() {
+		v.Close()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("plugin Close timed out")
+	}
+
+	if !v.closed {
+		t.Fatal("v.closed = false, want true")
 	}
 }

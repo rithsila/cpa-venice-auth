@@ -213,3 +213,32 @@ func TestLoginPoll(t *testing.T) {
 		t.Fatal("message is empty")
 	}
 }
+
+func FuzzAuthParse(f *testing.F) {
+	// Seed corpus with various valid and invalid auth structures
+	f.Add([]byte(`{"type":"venice","api_key":"vnc_123"}`))
+	f.Add([]byte(`{"provider":"venice","wallet_key":"0x1234"}`))
+	f.Add([]byte(`{"StorageJSON":"eyJ0eXBlIjoidmVuaWNlIiwiYXBpX2tleSI6InRlc3QifQ=="}`))
+	f.Add([]byte(`{}`))
+	f.Add([]byte(`null`))
+	f.Add([]byte(`{"type":"openai","key":"sk-123"}`))
+	f.Add([]byte(`{"id":"venice-custom","label":"Custom Venice","apiKey":"key999"}`))
+	f.Add([]byte(`{"type":"venice","mode":"wallet","wallet_key":"abc"}`))
+	f.Add([]byte(`garbage bytes and []}{:`))
+
+	svc := NewService(nil, DefaultConfig())
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Parse should never crash on random byte inputs
+		res, err := svc.Parse(context.Background(), ParseRequest{
+			Provider: "venice",
+			FileName: "test.json",
+			RawJSON:  data,
+		})
+		if err == nil && res.Handled {
+			_ = res.Auth.ID
+			_ = res.Auth.Label
+			_ = res.Auth.StorageJSON
+		}
+	})
+}

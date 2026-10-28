@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"sync"
+	"time"
 
 	"cpa-venice-auth/internal/auth"
 	"cpa-venice-auth/internal/dispatch"
@@ -106,12 +107,15 @@ func (v *Venice) Config() Config {
 	return v.cfg
 }
 
-// Close stops background work. No goroutines exist yet; the flag is here so
-// later waves have one shutdown point.
+// Close stops background work and cancels any in-flight streams.
 func (v *Venice) Close() {
 	v.mu.Lock()
 	v.closed = true
 	v.mu.Unlock()
+
+	if v.exec != nil {
+		v.exec.Close(5 * time.Second)
+	}
 }
 
 func (v *Venice) handleRegister(context.Context, []byte) (any, error) {

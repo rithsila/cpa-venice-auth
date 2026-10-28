@@ -28,6 +28,9 @@ type Service struct {
 	balanceGuard *x402.BalanceGuard
 	signersMu    sync.RWMutex
 	signers      map[string]*x402.Signer
+	streamsMu    sync.Mutex
+	activeCancel map[string]context.CancelFunc
+	streamsWg    sync.WaitGroup
 }
 
 // NewService creates an executor service.
@@ -50,6 +53,27 @@ func NewService(client *http.Client, hostCall host.CallFunc, cfg Config) *Servic
 		cfg:          cfg,
 		balanceGuard: x402.NewBalanceGuard(),
 		signers:      make(map[string]*x402.Signer),
+		activeCancel: make(map[string]context.CancelFunc),
+	}
+}
+
+// Close cancels all in-flight streams and waits up to timeout for them to finish.
+func (s *Service) Close(timeout time.Duration) {
+	s.streamsMu.Lock()
+	for _, cancel := range s.activeCancel {
+		cancel()
+	}
+	s.streamsMu.Unlock()
+
+	c := make(chan struct{})
+	go func() {
+		defer close(c)
+		s.streamsWg.Wait()
+	}()
+
+	select {
+	case <-c:
+	case <-time.After(timeout):
 	}
 }
 
@@ -242,7 +266,20 @@ func (s *Service) ExecuteStream(ctx context.Context, req Request) (StreamRespons
 
 	// If a StreamID was passed and hostCall is available, forward chunks asynchronously
 	if req.StreamID != "" && s.hostCall != nil {
-		go s.forwardStreamToHost(req.StreamID, resp.Body)
+		streamCtx, cancel := context.WithCancel(ctx)
+		s.streamsMu.Lock()
+		s.activeCancel[req.StreamID] = cancel
+		s.streamsMu.Unlock()
+
+		s.streamsWg.Add(1)
+		go func() {
+			defer s.streamsWg.Done()
+			s.forwardStreamToHost(streamCtx, req.StreamID, resp.Body)
+			s.streamsMu.Lock()
+			delete(s.activeCancel, req.StreamID)
+			s.streamsMu.Unlock()
+			cancel()
+		}()
 		return StreamResponse{Headers: streamHeaders}, nil
 	}
 
@@ -389,7 +426,7 @@ func (s *Service) buildHTTPRequest(ctx context.Context, req Request, stream bool
 	return httpReq, nil
 }
 
-func (s *Service) forwardStreamToHost(streamID string, r io.ReadCloser) {
+func (s *Service) forwardStreamToHost(ctx context.Context, streamID string, r io.ReadCloser) {
 	defer r.Close()
 	reader := bufio.NewReader(r)
 
@@ -405,6 +442,15 @@ func (s *Service) forwardStreamToHost(streamID string, r io.ReadCloser) {
 
 	buf := make([]byte, 4096)
 	for {
+		select {
+		case <-ctx.Done():
+			closeReq := rpcStreamCloseRequest{StreamID: streamID, Error: "stream canceled"}
+			payload, _ := json.Marshal(closeReq)
+			_, _ = s.hostCall("host.stream.close", payload)
+			return
+		default:
+		}
+
 		n, err := reader.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)

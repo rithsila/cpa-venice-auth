@@ -3,3 +3,4 @@ third_party/
 *.h
 .DS_Store
 NOTE.md
+.serena/

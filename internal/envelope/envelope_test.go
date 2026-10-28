@@ -47,3 +47,28 @@ func TestFailCarriesCode(t *testing.T) {
 		t.Fatalf("message = %q, want nope", env.Error.Message)
 	}
 }
+
+func FuzzEnvelopeDecode(f *testing.F) {
+	// Seed corpus with valid and invalid payloads
+	f.Add([]byte(`{"ok":true,"result":{"foo":"bar"}}`))
+	f.Add([]byte(`{"ok":false,"error":{"code":"test","message":"fail"}}`))
+	f.Add([]byte(`{}`))
+	f.Add([]byte(`null`))
+	f.Add([]byte(`{"ok":true}`))
+	f.Add([]byte(`{"ok":false}`))
+	f.Add([]byte(`garbage not json`))
+	f.Add([]byte(`{"ok": true, "result": 12345}`))
+	f.Add([]byte(`{"ok": false, "error": null}`))
+
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// Decode should never panic, regardless of input
+		env, err := Decode(data)
+		if err == nil && env != nil {
+			_ = env.OK
+			if env.Error != nil {
+				_ = env.Error.Code
+				_ = env.Error.Message
+			}
+		}
+	})
+}
