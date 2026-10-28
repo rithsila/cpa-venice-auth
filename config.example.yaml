@@ -15,7 +15,7 @@ plugins:
   enabled: true
   # CPA v8 discovers <dir>/<plugin-id>.dylib and <dir>/<os>/<arch>/<plugin-id>.dylib.
   # The file stem must match the key under configs.
-  dir: "/Users/rithsila/Projects/cpa-venice-auth/bin/plugins"
+  dir: "./bin/plugins"
   configs:
     venice-provider:
       enabled: true
