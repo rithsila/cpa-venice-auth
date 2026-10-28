@@ -1,3 +1,3 @@
-7f2a803c96126228845f0a7d124f98a994dcd92a898cbaf273cc21ad80efe8ff  bin/plugins/darwin/amd64/venice-provider.dylib
-44940f6acbe6eab6abe8a8c0afb400d0454c3fdc9153c0fb5e7d11ef6ad1443b  bin/plugins/darwin/arm64/venice-provider.dylib
-44940f6acbe6eab6abe8a8c0afb400d0454c3fdc9153c0fb5e7d11ef6ad1443b  bin/plugins/venice-provider.dylib
+9182aed56d6df1c8e71ea8829382cb019d89d28367071dd8adc66a8052c969fa  bin/plugins/darwin/amd64/venice-provider.dylib
+787beac328a82850b906a863ea70e7d117b767434a00ef08868182591b7c103d  bin/plugins/darwin/arm64/venice-provider.dylib
+787beac328a82850b906a863ea70e7d117b767434a00ef08868182591b7c103d  bin/plugins/venice-provider.dylib
