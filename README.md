@@ -192,4 +192,4 @@ CPA version is pinned in `IMPLEMENTATION_PLAN.md`. A different major ABI means r
 
 ## License
 
-Not set yet. Do not redistribute until a license file exists.
+MIT License. See [`LICENSE`](LICENSE) for terms.

@@ -23,6 +23,11 @@ func TestRedact(t *testing.T) {
 			want: "using REDACTED for auth",
 		},
 		{
+			name: "venice key prefix",
+			in:   "using vnc_1234567890abcdef for auth",
+			want: "using REDACTED for auth",
+		},
+		{
 			name: "wallet private key",
 			in:   "wallet " + wallet,
 			want: "wallet REDACTED",

@@ -4,9 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-CPA="${CPA_BIN:-/private/var/folders/6g/sq1ym1qx0f5by24ynbd7pvsw0000gn/T/cpa-bin/cli-proxy-api}"
+CPA="${CPA_BIN:-$ROOT_DIR/third_party/CLIProxyAPI/cli-proxy-api}"
 if [ ! -x "$CPA" ]; then
   CPA="$(command -v cli-proxy-api 2>/dev/null || true)"
+fi
+if [ -z "$CPA" ] || [ ! -x "$CPA" ]; then
+  CPA="/private/var/folders/6g/sq1ym1qx0f5by24ynbd7pvsw0000gn/T/cpa-bin/cli-proxy-api"
 fi
 
 if [ -z "$CPA" ] || [ ! -x "$CPA" ]; then

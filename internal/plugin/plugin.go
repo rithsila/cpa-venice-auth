@@ -222,7 +222,15 @@ func (v *Venice) handleReconfigure(ctx context.Context, payload []byte) (any, er
 		}
 	}
 	if v.models != nil {
+		v.models.SetCacheTTL(v.cfg.ModelsCacheSeconds)
 		v.models.Invalidate()
+	}
+	if v.exec != nil {
+		v.exec.UpdateConfig(executor.Config{
+			BaseURL:       v.cfg.BaseURL,
+			WalletEnabled: v.cfg.WalletEnabled,
+			WalletKeyEnv:  v.cfg.WalletKeyEnv,
+		})
 	}
 	v.mu.Unlock()
 	return v.handleRegister(ctx, payload)

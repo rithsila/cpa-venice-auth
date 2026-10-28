@@ -57,6 +57,22 @@ func NewService(client *http.Client, hostCall host.CallFunc, cfg Config) *Servic
 	}
 }
 
+// UpdateConfig refreshes runtime configuration parameters.
+func (s *Service) UpdateConfig(cfg Config) {
+	s.signersMu.Lock()
+	defer s.signersMu.Unlock()
+	if cfg.BaseURL != "" {
+		s.cfg.BaseURL = cfg.BaseURL
+	}
+	s.cfg.WalletEnabled = cfg.WalletEnabled
+	if cfg.WalletKeyEnv != "" {
+		s.cfg.WalletKeyEnv = cfg.WalletKeyEnv
+	}
+	if cfg.MaxRetries > 0 {
+		s.cfg.MaxRetries = cfg.MaxRetries
+	}
+}
+
 // Close cancels all in-flight streams and waits up to timeout for them to finish.
 func (s *Service) Close(timeout time.Duration) {
 	s.streamsMu.Lock()

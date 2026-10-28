@@ -24,6 +24,7 @@ func New(call CallFunc) *API {
 var redactions = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+`),
 	regexp.MustCompile(`sk-[A-Za-z0-9_-]{8,}`),
+	regexp.MustCompile(`vnc_[A-Za-z0-9_-]{8,}`),
 	regexp.MustCompile(`0x[0-9a-fA-F]{64}`),
 	regexp.MustCompile(`(?i)(SIGN-IN-WITH-X:\s*)\S+`),
 }
