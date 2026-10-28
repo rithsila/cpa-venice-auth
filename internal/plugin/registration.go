@@ -26,6 +26,8 @@ type capabilities struct {
 	ExecutorModelScope    string   `json:"executor_model_scope,omitempty"`
 	ExecutorInputFormats  []string `json:"executor_input_formats,omitempty"`
 	ExecutorOutputFormats []string `json:"executor_output_formats,omitempty"`
+	ModelRegistrar        bool     `json:"model_registrar"`
+	QuotaProvider         bool     `json:"quota_provider"`
 }
 
 type registration struct {
@@ -75,6 +77,8 @@ func buildRegistration() registration {
 			ExecutorModelScope:    "both",
 			ExecutorInputFormats:  []string{"chat-completions"},
 			ExecutorOutputFormats: []string{"chat-completions"},
+			ModelRegistrar:        true,
+			QuotaProvider:         true,
 		},
 	}
 }

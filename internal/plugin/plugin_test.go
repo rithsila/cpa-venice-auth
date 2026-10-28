@@ -59,6 +59,12 @@ func TestRegistration(t *testing.T) {
 	if len(reg.Capabilities.ExecutorOutputFormats) != 1 || reg.Capabilities.ExecutorOutputFormats[0] != "chat-completions" {
 		t.Fatalf("executor_output_formats = %v, want [chat-completions]", reg.Capabilities.ExecutorOutputFormats)
 	}
+	if !reg.Capabilities.ModelRegistrar {
+		t.Fatal("model_registrar = false, want true in wave 4")
+	}
+	if !reg.Capabilities.QuotaProvider {
+		t.Fatal("quota_provider = false, want true in wave 4")
+	}
 	if len(reg.Metadata.ConfigFields) != 4 {
 		t.Fatalf("config fields = %d, want 4", len(reg.Metadata.ConfigFields))
 	}
@@ -233,6 +239,31 @@ func TestExecutorCountTokensReturnsUnsupported(t *testing.T) {
 	}
 	if env.Error == nil || env.Error.Code != "unsupported" {
 		t.Fatalf("error = %+v, want unsupported", env.Error)
+	}
+}
+
+func TestQuotaIdentifier(t *testing.T) {
+	env := call(t, newDispatcher(), "quota.identifier")
+	var res identifierResponse
+	if err := json.Unmarshal(env.Result, &res); err != nil {
+		t.Fatalf("identifier: %v", err)
+	}
+	if res.Identifier != ProviderName {
+		t.Fatalf("identifier = %q, want %q", res.Identifier, ProviderName)
+	}
+}
+
+func TestQuotaDescribe(t *testing.T) {
+	env := call(t, newDispatcher(), "quota.describe")
+	var res struct {
+		SupportedProviders []string `json:"supported_providers"`
+		DisplayName        string   `json:"display_name"`
+	}
+	if err := json.Unmarshal(env.Result, &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(res.SupportedProviders) != 1 || res.SupportedProviders[0] != "venice" {
+		t.Fatalf("supported_providers = %v, want ['venice']", res.SupportedProviders)
 	}
 }
 

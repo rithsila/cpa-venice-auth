@@ -10,6 +10,8 @@ import (
 	"cpa-venice-auth/internal/dispatch"
 	"cpa-venice-auth/internal/executor"
 	"cpa-venice-auth/internal/host"
+	"cpa-venice-auth/internal/models"
+	"cpa-venice-auth/internal/quota"
 )
 
 const (
@@ -49,6 +51,8 @@ type Venice struct {
 	host   *host.API
 	auth   *auth.Service
 	exec   *executor.Service
+	models *models.Service
+	quota  *quota.Service
 	closed bool
 }
 
@@ -60,10 +64,12 @@ func New(h *host.API) *Venice {
 		hostCall = h.Call
 	}
 	return &Venice{
-		cfg:  cfg,
-		host: h,
-		auth: auth.NewService(nil, auth.Config{BaseURL: cfg.BaseURL}),
-		exec: executor.NewService(nil, hostCall, executor.Config{BaseURL: cfg.BaseURL}),
+		cfg:    cfg,
+		host:   h,
+		auth:   auth.NewService(nil, auth.Config{BaseURL: cfg.BaseURL}),
+		exec:   executor.NewService(nil, hostCall, executor.Config{BaseURL: cfg.BaseURL}),
+		models: models.NewService(nil, cfg.BaseURL, cfg.ModelsCacheSeconds),
+		quota:  quota.NewService(nil, cfg.BaseURL),
 	}
 }
 
@@ -72,7 +78,7 @@ func New(h *host.API) *Venice {
 // unknown_method instead of a half-working stub.
 func (v *Venice) Register(d *dispatch.Dispatcher) {
 	d.Register("plugin.register", v.handleRegister)
-	d.Register("plugin.reconfigure", v.handleRegister)
+	d.Register("plugin.reconfigure", v.handleReconfigure)
 	d.Register("auth.identifier", v.handleAuthIdentifier)
 	d.Register("auth.parse", v.handleAuthParse)
 	d.Register("auth.refresh", v.handleAuthRefresh)
@@ -83,6 +89,10 @@ func (v *Venice) Register(d *dispatch.Dispatcher) {
 	d.Register("executor.execute_stream", v.handleExecutorExecuteStream)
 	d.Register("executor.count_tokens", v.handleExecutorCountTokens)
 	d.Register("executor.http_request", v.handleExecutorHTTPRequest)
+	d.Register("model.register", v.handleModelRegister)
+	d.Register("quota.identifier", v.handleQuotaIdentifier)
+	d.Register("quota.describe", v.handleQuotaDescribe)
+	d.Register("quota.fetch", v.handleQuotaFetch)
 }
 
 // Config returns a copy of the active configuration.
@@ -182,4 +192,41 @@ func (v *Venice) handleExecutorHTTPRequest(ctx context.Context, payload []byte) 
 		}
 	}
 	return v.exec.HTTPRequest(ctx, req)
+}
+
+func (v *Venice) handleReconfigure(ctx context.Context, payload []byte) (any, error) {
+	if v.models != nil {
+		v.models.Invalidate()
+	}
+	return v.handleRegister(ctx, payload)
+}
+
+func (v *Venice) handleModelRegister(ctx context.Context, payload []byte) (any, error) {
+	var req models.RegistrationRequest
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &req)
+	}
+	return v.models.RegisterModels(ctx, req)
+}
+
+func (v *Venice) handleQuotaIdentifier(context.Context, []byte) (any, error) {
+	return identifierResponse{Identifier: ProviderName}, nil
+}
+
+func (v *Venice) handleQuotaDescribe(ctx context.Context, payload []byte) (any, error) {
+	var req quota.DescribeRequest
+	if len(payload) > 0 {
+		_ = json.Unmarshal(payload, &req)
+	}
+	return v.quota.Describe(ctx, req)
+}
+
+func (v *Venice) handleQuotaFetch(ctx context.Context, payload []byte) (any, error) {
+	var req quota.FetchRequest
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &req); err != nil {
+			return nil, dispatch.Errorf("invalid_request", "unmarshal quota fetch request: %v", err)
+		}
+	}
+	return v.quota.Fetch(ctx, req)
 }
