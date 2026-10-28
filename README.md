@@ -97,7 +97,18 @@ Build:
 
 ```bash
 make build          # -> bin/plugins/venice-provider.dylib
+make artifacts      # -> builds darwin-arm64, darwin-amd64 and generates checksums.txt
+make itest          # -> run integration tests against pinned CPA binary
+make smoke          # -> run smoke tests (mocked or live if VENICE_API_KEY is set)
+make soak           # -> run soak testing
 ```
+
+Cross-compilation targets:
+- `make darwin-arm64` -> `bin/plugins/darwin/arm64/venice-provider.dylib`
+- `make darwin-amd64` -> `bin/plugins/darwin/amd64/venice-provider.dylib`
+- `make linux-amd64` -> `bin/plugins/linux/amd64/venice-provider.so` (requires `x86_64-linux-gnu-gcc` or zig)
+- `make linux-arm64` -> `bin/plugins/linux/arm64/venice-provider.so` (requires `aarch64-linux-gnu-gcc` or zig)
+- `make windows-amd64` -> `bin/plugins/windows/amd64/venice-provider.dll` (requires `x86_64-w64-mingw32-gcc` or zig)
 
 Or by hand on macOS:
 

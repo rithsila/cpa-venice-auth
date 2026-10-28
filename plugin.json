@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "venice-provider",
+  "name": "venice-provider",
+  "version": "0.1.0",
+  "author": "TRISPER",
+  "repository": "https://github.com/rithsila/cpa-venice-auth",
+  "description": "Venice AI provider plugin for CLIProxyAPI with paid API key, x402 wallet auth, and quota tracking.",
+  "capabilities": {
+    "auth_provider": true,
+    "executor": true,
+    "model_registrar": true,
+    "quota_provider": true
+  },
+  "config_fields": [
+    {
+      "name": "wallet_enabled",
+      "type": "boolean",
+      "default": false,
+      "description": "Enable x402 wallet credentials"
+    },
+    {
+      "name": "models_cache_seconds",
+      "type": "integer",
+      "default": 10800,
+      "description": "Seconds to cache the Venice model catalog"
+    },
+    {
+      "name": "wallet_key_env",
+      "type": "string",
+      "default": "VENICE_X402_PRIVATE_KEY",
+      "description": "Environment variable holding the wallet private key"
+    },
+    {
+      "name": "base_url",
+      "type": "string",
+      "default": "https://api.venice.ai/api/v1",
+      "description": "Venice API base URL"
+    }
+  ]
+}
